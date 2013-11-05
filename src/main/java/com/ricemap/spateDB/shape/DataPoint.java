@@ -57,5 +57,10 @@ public class DataPoint extends Point3d {
 		id = TextSerializerHelper.consumeLong(text, ',');
 		dataValue = TextSerializerHelper.consumeInt(text, '\n');
 	}
+	
+	@Override
+	public int getSizeofAllFields() {
+		return 36;
+	}
 
 }

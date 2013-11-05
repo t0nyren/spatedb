@@ -12,12 +12,15 @@
  */
 package com.ricemap.spateDB.core;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
 import java.io.DataInputStream;
 import java.io.DataOutput;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Array;
+import java.lang.reflect.Field;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
@@ -30,6 +33,9 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.io.DoubleWritable;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.util.IndexedSortable;
@@ -53,14 +59,18 @@ import com.ricemap.spateDB.shape.Shape;
  * 
  */
 public class RTree<T extends Shape> implements Writable, Iterable<T> {
+	public static enum FIELD_TYPE{NULL, Integer, Long, Double};
 	/** Logger */
 	private static final Log LOG = LogFactory.getLog(RTree.class);
 
-	/** Size of tree header on disk. Height + Degree + Number of records */
-	public static final int TreeHeaderSize = 4 + 4 + 4;
+	/** Size of tree header on disk. Height + Degree + Number of records + isColumnar*/
+	public static final int TreeHeaderSize = 4 + 4 + 4 + 4;
 
 	/** Size of a node. Offset of first child + dimensions (x, y, width, height) */
 	public static final int NodeSize = 4 + 8 * 6;
+	
+	/** t, x ,y */
+	public static final int IndexUnitSize = 8 * 3;
 
 	/** An instance of T that can be used to deserialize objects from disk */
 	T stockObject;
@@ -73,6 +83,8 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 
 	/** Total number of nodes in the tree */
 	private int nodeCount;
+	
+	private int columnar;
 
 	/** Number of leaf nodes */
 	private int leafNodeCount;
@@ -97,6 +109,8 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	 * last leaf node correctly
 	 */
 	private int treeSize;
+	
+
 
 	public RTree() {
 	}
@@ -125,9 +139,12 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	 */
 	public void bulkLoadWrite(final byte[] element_bytes, final int offset,
 			final int len, final int degree, DataOutput dataOut,
-			final boolean fast_sort) {
+			final boolean fast_sort, final boolean columnarStorage) {
 		try {
-
+			
+			//TODO: the order of fields should be stable under Oracle JVM, but not guaranteed
+			Field[] fields = stockObject.getClass().getDeclaredFields();
+			
 			// Count number of elements in the given text
 			int i_start = offset;
 			final Text line = new Text();
@@ -136,6 +153,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 				// Extract the line without end of line character
 				line.set(element_bytes, i_start, i_end - i_start - 1);
 				stockObject.fromText(line);
+				
 				elementCount++;
 				i_start = i_end;
 			}
@@ -163,14 +181,26 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 
 			// Keep track of the offset of each element in the text
 			final int[] offsets = new int[elementCount];
+			final int[] ids = new int[elementCount];
 			final double[] ts = fast_sort ? new double[elementCount] : null;
 			final double[] xs = fast_sort ? new double[elementCount] : null;
 			final double[] ys = fast_sort ? new double[elementCount] : null;
+			
+			//initialize columnar data output
+			ByteArrayOutputStream index_bos = new ByteArrayOutputStream();
+			DataOutputStream index_dos = new DataOutputStream(index_bos);
+			ByteArrayOutputStream[] bos = new ByteArrayOutputStream[fields.length];
+			DataOutputStream[] dos = new DataOutputStream[fields.length];
+			for (int i = 0; i < bos.length; i++){
+				bos[i] = new ByteArrayOutputStream();
+				dos[i] = new DataOutputStream(bos[i]);
+			}
 
 			i_start = offset;
 			line.clear();
 			for (int i = 0; i < elementCount; i++) {
 				offsets[i] = i_start;
+				ids[i] = i;
 				int i_end = skipToEOL(element_bytes, i_start);
 				if (xs != null) {
 					// Extract the line with end of line character
@@ -180,8 +210,38 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 					ts[i] = (stockObject.getMBR().t1 + stockObject.getMBR().t2) / 2;
 					xs[i] = (stockObject.getMBR().x1 + stockObject.getMBR().x2) / 2;
 					ys[i] = (stockObject.getMBR().y1 + stockObject.getMBR().y2) / 2;
+					
+					//build columnar storage
+					if (stockObject instanceof Point3d){
+						index_dos.writeDouble(ts[i]);
+						index_dos.writeDouble(xs[i]);
+						index_dos.writeDouble(ys[i]);
+					}
+					else{
+						throw new RuntimeException("Indexing non-point shape with RTREE is not supported yet");
+					}
+					
+					for (int j = 0 ; j < fields.length; j++){
+						if (fields[j].getType().equals(Integer.TYPE)){
+							dos[j].writeInt(fields[j].getInt(stockObject));
+						}
+						else if (fields[j].getType().equals(Double.TYPE)){
+							dos[j].writeDouble(fields[j].getDouble(stockObject));
+						}
+						else if (fields[j].getType().equals(Long.TYPE)){
+							dos[j].writeLong(fields[j].getLong(stockObject));
+						}
+						else{
+							continue;
+							//throw new RuntimeException("Field type is not supported yet");
+						}
+					}
 				}
 				i_start = i_end;
+			}
+			index_dos.close();
+			for (int i = 0; i < dos.length; i++){
+				dos[i].close();
 			}
 
 			/** A struct to store information about a split */
@@ -205,7 +265,8 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 
 				@Override
 				public void write(DataOutput out) throws IOException {
-					out.writeInt(offsetOfFirstElement);
+					//out.writeInt(offsetOfFirstElement);
+					out.writeInt(index1);
 					super.write(out);
 				}
 
@@ -235,6 +296,10 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 								int tempid = offsets[i];
 								offsets[i] = offsets[j];
 								offsets[j] = tempid;
+								
+								tempid = ids[i];
+								ids[i] = ids[j];
+								ids[j] = tempid;
 							}
 
 							@Override
@@ -265,6 +330,9 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 								int tempid = offsets[i];
 								offsets[i] = offsets[j];
 								offsets[j] = tempid;
+								tempid = ids[i];
+								ids[i] = ids[j];
+								ids[j] = tempid;
 							}
 
 							@Override
@@ -298,6 +366,10 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 								int tempid = offsets[i];
 								offsets[i] = offsets[j];
 								offsets[j] = tempid;
+								
+								tempid = ids[i];
+								ids[i] = ids[j];
+								ids[j] = tempid;
 							}
 
 							@Override
@@ -319,6 +391,10 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 								int tempid = offsets[i];
 								offsets[i] = offsets[j];
 								offsets[j] = tempid;
+								
+								tempid = ids[i];
+								ids[i] = ids[j];
+								ids[j] = tempid;
 							}
 
 							@Override
@@ -351,6 +427,10 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 								int tempid = offsets[i];
 								offsets[i] = offsets[j];
 								offsets[j] = tempid;
+								
+								tempid = ids[i];
+								ids[i] = ids[j];
+								ids[j] = tempid;
 							}
 
 							@Override
@@ -384,6 +464,10 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 								int tempid = offsets[i];
 								offsets[i] = offsets[j];
 								offsets[j] = tempid;
+								
+								tempid = ids[i];
+								ids[i] = ids[j];
+								ids[j] = tempid;
 							}
 
 							@Override
@@ -577,19 +661,56 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 			// Degree
 			dataOut.writeInt(degree);
 			dataOut.writeInt(elementCount);
+			
+			//isColumnar
+			dataOut.writeInt(columnarStorage ? 1 : 0);
 
 			// write nodes
 			for (SplitStruct node : nodes) {
 				node.write(dataOut);
 			}
 			// write elements
+			
+			byte[] index_bs = index_bos.toByteArray();
+			byte[][] bss = new byte[bos.length][];
+			for (int i = 0; i < bss.length; i++){
+				bss[i] = bos[i].toByteArray();
+			}
 			for (int element_i = 0; element_i < elementCount; element_i++) {
-				int eol = skipToEOL(element_bytes, offsets[element_i]);
-				dataOut.write(element_bytes, offsets[element_i], eol
-						- offsets[element_i]);
+				//int eol = skipToEOL(element_bytes, offsets[element_i]);
+				//dataOut.write(element_bytes, offsets[element_i], eol - offsets[element_i]);
+				dataOut.write(index_bs, ids[element_i]*IndexUnitSize, IndexUnitSize);
+			}
+			
+			for (int i = 0; i < fields.length; i++){
+				int fieldSize = 0;
+				if (fields[i].getType().equals(Integer.TYPE)){
+					fieldSize = 4;
+				}
+				else if (fields[i].getType().equals(Long.TYPE)){
+					fieldSize = 8;
+				}
+				else if (fields[i].getType().equals(Double.TYPE)){
+					fieldSize = 8;
+				}
+				else{
+					//throw new RuntimeException("Unsupported field type: " + fields[i].getType().getName());
+					continue;
+				}
+				for (int element_i = 0; element_i < elementCount; element_i++) {
+					//int eol = skipToEOL(element_bytes, offsets[element_i]);
+					//dataOut.write(element_bytes, offsets[element_i], eol - offsets[element_i]);
+					dataOut.write(bss[i], ids[element_i]*fieldSize, fieldSize);
+				}
 			}
 
 		} catch (IOException e) {
+			e.printStackTrace();
+		} catch (IllegalArgumentException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (IllegalAccessException e) {
+			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 	}
@@ -616,6 +737,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 			return;
 		degree = in.readInt();
 		elementCount = in.readInt();
+		columnar = in.readInt();
 
 		// Keep only tree structure in memory
 		nodeCount = (int) ((powInt(degree, height) - 1) / (degree - 1));
@@ -825,7 +947,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 		//tony
 		int tindex1 = 0;
 		double t1 = gridInfo.t1;
-		for (int lay = 0; lay < gridInfo.columns; lay++){
+		for (int lay = 0; lay < gridInfo.layers; lay++){
 			int tindex2 = sample.length * (lay + 1) / gridInfo.layers;
 			
 			double t2 = lay == gridInfo.layers - 1 ? gridInfo.t2 : sample[tindex2 - 1].t;
@@ -983,8 +1105,53 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	 * @return
 	 * @throws IOException
 	 */
-	protected int search(Shape query_shape, ResultCollector<T> output,
-			int start, int end) throws IOException {
+	protected int search(Shape query_shape, ResultCollector<Writable> output,
+			int start, int end, String field) throws IOException {
+		if (output == null){
+			throw new RuntimeException("Output is NULL");
+		}
+		//build search field
+		int fieldOffset = 0;	
+		int fieldSize = -1;
+		FIELD_TYPE fieldType = FIELD_TYPE.NULL;
+		//get fields
+		Field[] fields = stockObject.getClass().getDeclaredFields();
+		
+		for (int i = 0; i < fields.length; i++){
+			if (fields[i].getName().equals(field)){
+				if ( fields[i].getType().equals(Integer.TYPE)){
+					fieldSize =  4;
+					fieldType = FIELD_TYPE.Integer;
+					
+				}
+				else if ( fields[i].getType().equals(Long.TYPE)){
+					fieldSize =  8;
+					fieldType = FIELD_TYPE.Long;
+				}
+				else if ( fields[i].getType().equals(Double.TYPE)){
+					fieldSize =  8;
+					fieldType = FIELD_TYPE.Double;
+				}
+				else{
+					//throw new RuntimeException("Unsupported type: " + fields[i].getType());
+				}
+				break;
+			}
+			else{
+				if ( fields[i].getType().equals(Integer.TYPE)){
+					fieldOffset += elementCount * 4;
+				}
+				else if ( fields[i].getType().equals(Long.TYPE) ||  fields[i].getType().equals(Double.TYPE)){
+					fieldOffset += elementCount * 8;
+				}
+				else{
+					//throw new RuntimeException("Unsupported type: " + fields[i].getType());
+				}
+			}
+		}
+		
+		
+		
 		Prism query_mbr = query_shape.getMBR();
 		int resultSize = 0;
 		// Special case for an empty tree
@@ -1014,12 +1181,12 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 
 				for (int i = 0; i < mbrsToTest; i++) {
 					node_mbr.readFields(structure);
-					int lastOffset = (searchNumber + i) == nodeCount - 1 ? treeSize
+					int lastOffset = (searchNumber + i) == nodeCount - 1 ? elementCount - 1
 							: structure.readInt();
 					if (query_mbr.contains(node_mbr)) {
 						// The node is full contained in the query range.
 						// Save the time and do full scan for this node
-						toBeSearched.push(dataOffset);
+						
 						// Checks if this node is the last node in its level
 						// This can be easily detected because the next node in
 						// the level
@@ -1028,8 +1195,27 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 						// which means it will have an offset less than this
 						// node
 						if (lastOffset <= dataOffset)
-							lastOffset = treeSize;
-						toBeSearched.push(lastOffset);
+							lastOffset = elementCount;
+						
+						data.seek(treeStartOffset + TreeHeaderSize + nodeCount * NodeSize + elementCount * IndexUnitSize + fieldOffset + dataOffset * fieldSize);
+						for (int j = 0; j < lastOffset - dataOffset; j++){
+							switch (fieldType){
+							case Integer:
+								output.collect(new IntWritable(data.readInt()));
+								break;
+							case Long:
+								output.collect(new LongWritable(data.readLong()));
+								break;
+							case Double:
+								output.collect(new DoubleWritable(data.readDouble()));
+								break;
+							default:
+								output.collect(new Point3d(data.readDouble(), data.readDouble(), data.readDouble()));
+								break;
+							}
+							resultSize++;
+						}
+
 					} else if (query_mbr.isIntersected(node_mbr)) {
 						// Node partially overlaps with query. Go deep under
 						// this node
@@ -1038,7 +1224,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 							toBeSearched.push((searchNumber + i) * degree + 1);
 						} else {
 							// Search all elements in this node
-							toBeSearched.push(dataOffset);
+							//toBeSearched.push(dataOffset);
 							// Checks if this node is the last node in its level
 							// This can be easily detected because the next node
 							// in the level
@@ -1047,13 +1233,47 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 							// which means it will have an offset less than this
 							// node
 							if (lastOffset <= dataOffset)
-								lastOffset = treeSize;
-							toBeSearched.push(lastOffset);
+								lastOffset = elementCount;
+							//toBeSearched.push(lastOffset);
+							data.seek(treeStartOffset + TreeHeaderSize + nodeCount * NodeSize + dataOffset * IndexUnitSize);
+							boolean report[] = new boolean[lastOffset - dataOffset];
+							Point3d point = new Point3d();
+							for (int j = 0; j < lastOffset - dataOffset; j++){
+								point.t = data.readDouble();
+								point.x = data.readDouble();
+								point.y = data.readDouble();
+								if (point.isIntersected(query_shape)){
+									report[j] = true;
+								}
+								else
+									report[j] = false;
+							}
+							data.seek(treeStartOffset + TreeHeaderSize + nodeCount * NodeSize + elementCount * IndexUnitSize + fieldOffset + dataOffset * fieldSize);
+							for (int j = 0; j < lastOffset - dataOffset; j++){
+								if (report[j]){
+									switch (fieldType){
+									case Integer:
+										output.collect(new IntWritable(data.readInt()));
+										break;
+									case Long:
+										output.collect(new LongWritable(data.readLong()));
+										break;
+									case Double:
+										output.collect(new DoubleWritable(data.readDouble()));
+										break;
+									default:
+										output.collect(new Point3d(data.readDouble(), data.readDouble(), data.readDouble()));
+										break;
+									}
+									resultSize++;
+								}
+							}
 						}
 					}
 					dataOffset = lastOffset;
 				}
 			} else {
+				LOG.error("searchNumber > nodeCount, something is wrong");
 				int firstOffset, lastOffset;
 				// Search for data items (records)
 				lastOffset = searchNumber;
@@ -1086,11 +1306,11 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	 *            are not reported
 	 * @return - Total number of records found
 	 */
-	public int search(Shape query, ResultCollector<T> output) {
+	public int search(Shape query, ResultCollector<Writable> output, String field) {
 		int resultCount = 0;
 
 		try {
-			resultCount = search(query, output, 0, 0);
+			resultCount = search(query, output, 0, 0, field);
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -1127,13 +1347,13 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 			queryRange.x2 = qx + query_radius / 2;
 			queryRange.y2 = qy + query_radius / 2;
 			// Retrieve all results in range
-			search(queryRange, new ResultCollector<T>() {
+			search(queryRange, new ResultCollector<Writable>() {
 				@Override
-				public void collect(T shape) {
-					distances.add(shape.distanceTo(qt, qx, qy));
-					shapes.add((T) shape.clone());
+				public void collect(Writable shape) {
+					distances.add(((T)shape).distanceTo(qt, qx, qy));
+					shapes.add((T) ((T) shape).clone());
 				}
-			});
+			}, null);
 			if (shapes.size() < k) {
 				// Didn't find k elements in range, double the range to get more
 				// items

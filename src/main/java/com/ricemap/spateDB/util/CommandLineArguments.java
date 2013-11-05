@@ -33,6 +33,7 @@ import com.ricemap.spateDB.shape.DataPoint;
 import com.ricemap.spateDB.shape.Point3d;
 import com.ricemap.spateDB.shape.Prism;
 import com.ricemap.spateDB.shape.Shape;
+import com.ricemap.spateDB.util.QueryInput.QUERY_TYPE;
 
 
 /**
@@ -52,7 +53,7 @@ public class CommandLineArguments {
   public Prism getPrism() {
     Prism rect = null;
     for (String arg : args) {
-      if (arg.startsWith("rect:") || arg.startsWith("Prism:") || arg.startsWith("mbr:")) {
+      if (arg.startsWith("rect:") || arg.startsWith("prism:") || arg.startsWith("mbr:")) {
         rect = new Prism();
         rect.fromText(new Text(arg.substring(arg.indexOf(':')+1)));
       }
@@ -63,7 +64,7 @@ public class CommandLineArguments {
   public Prism[] getPrisms() {
     Vector<Prism> Prisms = new Vector<Prism>();
     for (String arg : args) {
-      if (arg.startsWith("rect:") || arg.startsWith("Prism:") || arg.startsWith("mbr:")) {
+      if (arg.startsWith("rect:") || arg.startsWith("prism:") || arg.startsWith("mbr:")) {
         Prism rect = new Prism();
         rect.fromText(new Text(arg.substring(arg.indexOf(':')+1)));
         Prisms.add(rect);
@@ -234,6 +235,27 @@ public class CommandLineArguments {
       }
     }
     return 0;
+  }
+  
+  public QueryInput getQuery(){
+	  QueryInput query = new QueryInput();
+	  for (String arg : args){
+		  if (arg.startsWith("query:")){
+			  if (arg.substring(arg.indexOf(':')+1).startsWith("distinct")){
+				  query.type = QUERY_TYPE.Distinct;
+			  }
+			  else if (arg.substring(arg.indexOf(':')+1).startsWith("distribution")){
+				  query.type = QUERY_TYPE.Distribution;
+			  }
+			  else if (arg.substring(arg.indexOf(':')+1).startsWith("distribution")){
+				  query.type = QUERY_TYPE.Average;
+			  }
+		  }
+		  if (arg.startsWith("field:")){
+			  query.field = arg.substring(arg.indexOf(':')+1);
+		  }
+	  }
+	  return query;
   }
   
   /**

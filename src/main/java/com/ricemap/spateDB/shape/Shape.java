@@ -49,4 +49,6 @@ public interface Shape extends Writable, Cloneable, TextSerializable {
    * @throws CloneNotSupportedException
    */
   public Shape clone();
+  
+  public int getSizeofAllFields();
 }

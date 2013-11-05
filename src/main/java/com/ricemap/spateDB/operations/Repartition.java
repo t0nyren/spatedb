@@ -308,9 +308,9 @@ public class Repartition {
       destOut.close();
       
       // Plot an image for the partitions used in file
-      Path imagePath = new Path(outPath, "_partitions.png");
-      int imageSize = (int) (Math.sqrt(cellInfos.length) * 300);
-      Plot.plotLocal(masterPath, imagePath, new Partition(), imageSize, imageSize, Color.BLACK, false, false, false);
+      //Path imagePath = new Path(outPath, "_partitions.png");
+     //int imageSize = (int) (Math.sqrt(cellInfos.length) * 300);
+      //Plot.plotLocal(masterPath, imagePath, new Partition(), imageSize, imageSize, Color.BLACK, false, false, false);
     }
   }
   

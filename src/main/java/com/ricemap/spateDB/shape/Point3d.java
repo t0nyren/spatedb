@@ -147,4 +147,9 @@ public class Point3d implements Shape, Comparable<Point3d> {
 		return 0;
 	}
 
+	@Override
+	public int getSizeofAllFields() {
+		return 24;
+	}
+
 }

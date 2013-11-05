@@ -370,4 +370,9 @@ public class Prism implements Shape, WritableComparable<Prism> {
 		return 0;
 	}
 
+	@Override
+	public int getSizeofAllFields() {
+		return 48;
+	}
+
 }

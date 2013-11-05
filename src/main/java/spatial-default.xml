@@ -22,6 +22,13 @@
 </property>
 
 <property>
+  <name>spatedb.storage.StorageMode</name>
+  <value>columnar</value>
+  <description>Which mode to use for storing data in the RTree. Could be "columnar" or "text"</description>
+</property>
+
+
+<property>
   <name>spatialHadoop.storage.IndexingOverhead</name>
   <value>0.2</value>
   <description>The recommended target overhead of indexing.

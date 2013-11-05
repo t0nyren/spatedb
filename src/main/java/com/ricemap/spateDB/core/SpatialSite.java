@@ -64,6 +64,8 @@ public class SpatialSite {
   public static final String RTREE_BUILD_MODE =
       "spatialHadoop.storage.RTreeBuildMode";
   
+  public static final String STORAGE_MODE = "spatedb.storage.StorageMode";
+  
   /**Configuration line to set the default shape class to use if not set*/
   public static final String ShapeClass = "SpatialSite.ShapeClass";
   

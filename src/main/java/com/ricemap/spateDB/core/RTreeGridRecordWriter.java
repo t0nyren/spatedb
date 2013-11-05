@@ -47,6 +47,8 @@ public class RTreeGridRecordWriter<S extends Shape> extends GridRecordWriter<S> 
    */
   protected boolean fastRTree;
   
+  protected boolean columnarStorage;
+  
   /**The maximum storage (in bytes) that can be accepted by the user*/
   protected int maximumStorageOverhead;
 
@@ -70,8 +72,8 @@ public class RTreeGridRecordWriter<S extends Shape> extends GridRecordWriter<S> 
     // Determine the size of each RTree to decide when to flush a cell
     Configuration conf = fileSystem.getConf();
     this.fastRTree = conf.get(SpatialSite.RTREE_BUILD_MODE, "fast").equals("fast");
-    this.maximumStorageOverhead =
-        (int) (conf.getFloat(SpatialSite.INDEXING_OVERHEAD, 0.1f) * blockSize);
+    this.columnarStorage = conf.get(SpatialSite.STORAGE_MODE, "columnar").equals("columnar");
+    this.maximumStorageOverhead = (int) (conf.getFloat(SpatialSite.INDEXING_OVERHEAD, 0.1f) * blockSize);
   }
   
   @Override
@@ -87,8 +89,11 @@ public class RTreeGridRecordWriter<S extends Shape> extends GridRecordWriter<S> 
     shape.toText(text);
     // Check if inserting this object will increase the degree of the R-tree
     // above the threshold
-    int new_data_size =
-        intermediateFileSize[cellIndex] + text.getLength() + NEW_LINE.length;
+    int new_data_size;
+    if (columnarStorage)
+    	new_data_size = intermediateFileSize[cellIndex] + shape.getSizeofAllFields();
+    else
+    	new_data_size = intermediateFileSize[cellIndex] + text.getLength() + NEW_LINE.length;
     int bytes_available = (int) (blockSize - 8 - new_data_size);
     if (bytes_available < maximumStorageOverhead) {
       // Check if writing this new record will take storage overhead beyond the
@@ -144,7 +149,7 @@ public class RTreeGridRecordWriter<S extends Shape> extends GridRecordWriter<S> 
     cellStream.writeLong(SpatialSite.RTreeFileMarker);
     int degree = 4096 / RTree.NodeSize;
     rtree.bulkLoadWrite(cellData, 0, cellData.length, degree, cellStream,
-        fastRTree);
+        fastRTree, columnarStorage);
     cellStream.close();
     cellData = null; // To allow GC to collect it
     
