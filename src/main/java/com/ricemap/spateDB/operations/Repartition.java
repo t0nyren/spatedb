@@ -233,7 +233,7 @@ public class Repartition {
    */
   public static void repartitionMapReduce(Path inFile, Path outPath,
       Shape stockShape, long blockSize, String sindex,
-      boolean overwrite) throws IOException {
+      boolean overwrite, boolean columnar) throws IOException {
     
     FileSystem inFs = inFile.getFileSystem(new Configuration());
     FileSystem outFs = outPath.getFileSystem(new Configuration());
@@ -269,7 +269,7 @@ public class Repartition {
     }
     
     repartitionMapReduce(inFile, outPath, stockShape, blockSize, cellInfos,
-        sindex, overwrite);
+        sindex, overwrite, columnar);
   }
   
   public static class RepartitionOutputCommitter extends FileOutputCommitter {
@@ -326,7 +326,7 @@ public class Repartition {
    */
   public static void repartitionMapReduce(Path inFile, Path outPath,
       Shape stockShape, long blockSize, CellInfo[] cellInfos, String sindex,
-      boolean overwrite) throws IOException {
+      boolean overwrite, boolean columnar) throws IOException {
     JobConf job = new JobConf(Repartition.class);
     job.setJobName("Repartition");
     FileSystem outFs = outPath.getFileSystem(job);
@@ -356,6 +356,7 @@ public class Repartition {
     boolean expand = sindex.equals("rtree");
     job.setBoolean(SpatialSite.PACK_CELLS, pack);
     job.setBoolean(SpatialSite.EXPAND_CELLS, expand);
+    job.setStrings(SpatialSite.STORAGE_MODE, columnar?"columnar":"normal");
 
     ClusterStatus clusterStatus = new JobClient(job).getClusterStatus();
     job.setNumMapTasks(10 * Math.max(1, clusterStatus.getMaxMapTasks()));
@@ -598,7 +599,7 @@ public class Repartition {
 
     // The spatial index to use
     String sindex = cla.get("sindex");
-    
+    boolean columnar = cla.get("columnar").equals("columnar");
     boolean overwrite = cla.isOverwrite();
     boolean local = cla.isLocal();
     long blockSize = cla.getBlockSize();
@@ -613,14 +614,14 @@ public class Repartition {
             blockSize, cells, sindex, overwrite);
       else
         repartitionMapReduce(inputPath, outputPath, stockShape,
-            blockSize, cells, sindex, overwrite);
+            blockSize, cells, sindex, overwrite, columnar);
     } else {
       if (local)
         repartitionLocal(inputPath, outputPath, stockShape,
             blockSize, sindex, overwrite);
       else
         repartitionMapReduce(inputPath, outputPath, stockShape,
-            blockSize, sindex, overwrite);
+            blockSize, sindex, overwrite, columnar);
     }
     long t2 = System.currentTimeMillis();
     System.out.println("Total indexing time in millis "+(t2-t1));

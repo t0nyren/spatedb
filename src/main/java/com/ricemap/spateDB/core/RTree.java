@@ -75,6 +75,8 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	/** An instance of T that can be used to deserialize objects from disk */
 	T stockObject;
 
+	public boolean columnar;
+	
 	/** Height of the tree (number of levels) */
 	private int height;
 
@@ -84,7 +86,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	/** Total number of nodes in the tree */
 	private int nodeCount;
 	
-	private int columnar;
+	
 
 	/** Number of leaf nodes */
 	private int leafNodeCount;
@@ -141,7 +143,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 			final int len, final int degree, DataOutput dataOut,
 			final boolean fast_sort, final boolean columnarStorage) {
 		try {
-			
+			columnar = columnarStorage;
 			//TODO: the order of fields should be stable under Oracle JVM, but not guaranteed
 			Field[] fields = stockObject.getClass().getDeclaredFields();
 			
@@ -265,8 +267,11 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 
 				@Override
 				public void write(DataOutput out) throws IOException {
-					//out.writeInt(offsetOfFirstElement);
-					out.writeInt(index1);
+					//
+					if (columnarStorage)
+						out.writeInt(index1);
+					else
+						out.writeInt(offsetOfFirstElement);
 					super.write(out);
 				}
 
@@ -670,37 +675,44 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 				node.write(dataOut);
 			}
 			// write elements
-			
-			byte[] index_bs = index_bos.toByteArray();
-			byte[][] bss = new byte[bos.length][];
-			for (int i = 0; i < bss.length; i++){
-				bss[i] = bos[i].toByteArray();
-			}
-			for (int element_i = 0; element_i < elementCount; element_i++) {
-				//int eol = skipToEOL(element_bytes, offsets[element_i]);
-				//dataOut.write(element_bytes, offsets[element_i], eol - offsets[element_i]);
-				dataOut.write(index_bs, ids[element_i]*IndexUnitSize, IndexUnitSize);
-			}
-			
-			for (int i = 0; i < fields.length; i++){
-				int fieldSize = 0;
-				if (fields[i].getType().equals(Integer.TYPE)){
-					fieldSize = 4;
-				}
-				else if (fields[i].getType().equals(Long.TYPE)){
-					fieldSize = 8;
-				}
-				else if (fields[i].getType().equals(Double.TYPE)){
-					fieldSize = 8;
-				}
-				else{
-					//throw new RuntimeException("Unsupported field type: " + fields[i].getType().getName());
-					continue;
+			if (columnarStorage){
+				byte[] index_bs = index_bos.toByteArray();
+				byte[][] bss = new byte[bos.length][];
+				for (int i = 0; i < bss.length; i++){
+					bss[i] = bos[i].toByteArray();
 				}
 				for (int element_i = 0; element_i < elementCount; element_i++) {
 					//int eol = skipToEOL(element_bytes, offsets[element_i]);
 					//dataOut.write(element_bytes, offsets[element_i], eol - offsets[element_i]);
-					dataOut.write(bss[i], ids[element_i]*fieldSize, fieldSize);
+					dataOut.write(index_bs, ids[element_i]*IndexUnitSize, IndexUnitSize);
+				}
+				
+				for (int i = 0; i < fields.length; i++){
+					int fieldSize = 0;
+					if (fields[i].getType().equals(Integer.TYPE)){
+						fieldSize = 4;
+					}
+					else if (fields[i].getType().equals(Long.TYPE)){
+						fieldSize = 8;
+					}
+					else if (fields[i].getType().equals(Double.TYPE)){
+						fieldSize = 8;
+					}
+					else{
+						//throw new RuntimeException("Unsupported field type: " + fields[i].getType().getName());
+						continue;
+					}
+					for (int element_i = 0; element_i < elementCount; element_i++) {
+						//int eol = skipToEOL(element_bytes, offsets[element_i]);
+						//dataOut.write(element_bytes, offsets[element_i], eol - offsets[element_i]);
+						dataOut.write(bss[i], ids[element_i]*fieldSize, fieldSize);
+					}
+				}
+			}
+			else{
+				for (int element_i = 0; element_i < elementCount; element_i++) {
+					int eol = skipToEOL(element_bytes, offsets[element_i]);
+					dataOut.write(element_bytes, offsets[element_i], eol - offsets[element_i]);
 				}
 			}
 
@@ -737,7 +749,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 			return;
 		degree = in.readInt();
 		elementCount = in.readInt();
-		columnar = in.readInt();
+		columnar = in.readInt()==1;
 
 		// Keep only tree structure in memory
 		nodeCount = (int) ((powInt(degree, height) - 1) / (degree - 1));
@@ -1105,7 +1117,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	 * @return
 	 * @throws IOException
 	 */
-	protected int search(Shape query_shape, ResultCollector<Writable> output,
+	protected int searchColumnar(Shape query_shape, ResultCollector<Writable> output,
 			int start, int end, String field) throws IOException {
 		if (output == null){
 			throw new RuntimeException("Output is NULL");
@@ -1294,7 +1306,98 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 		}
 		return resultSize;
 	}
+	
+	protected int search(Shape query_shape, ResultCollector<T> output,
+			int start, int end) throws IOException {
+		Prism query_mbr = query_shape.getMBR();
+		int resultSize = 0;
+		// Special case for an empty tree
+		if (height == 0)
+			return 0;
 
+		Stack<Integer> toBeSearched = new Stack<Integer>();
+		// Start from the given node
+		toBeSearched.push(start);
+		if (start >= nodeCount) {
+			toBeSearched.push(end);
+		}
+
+		Prism node_mbr = new Prism();
+
+		// Holds one data line from tree data
+		Text line = new Text2();
+
+		while (!toBeSearched.isEmpty()) {
+			int searchNumber = toBeSearched.pop();
+			int mbrsToTest = searchNumber == 0 ? 1 : degree;
+
+			if (searchNumber < nodeCount) {
+				long nodeOffset = NodeSize * searchNumber;
+				structure.seek(nodeOffset);
+				int dataOffset = structure.readInt();
+
+				for (int i = 0; i < mbrsToTest; i++) {
+					node_mbr.readFields(structure);
+					int lastOffset = (searchNumber + i) == nodeCount - 1 ? treeSize
+							: structure.readInt();
+					if (query_mbr.contains(node_mbr)) {
+						// The node is full contained in the query range.
+						// Save the time and do full scan for this node
+						toBeSearched.push(dataOffset);
+						// Checks if this node is the last node in its level
+						// This can be easily detected because the next node in
+						// the level
+						// order traversal will be the first node in the next
+						// level
+						// which means it will have an offset less than this
+						// node
+						if (lastOffset <= dataOffset)
+							lastOffset = treeSize;
+						toBeSearched.push(lastOffset);
+					} else if (query_mbr.isIntersected(node_mbr)) {
+						// Node partially overlaps with query. Go deep under
+						// this node
+						if (searchNumber < nonLeafNodeCount) {
+							// Search child nodes
+							toBeSearched.push((searchNumber + i) * degree + 1);
+						} else {
+							// Search all elements in this node
+							toBeSearched.push(dataOffset);
+							// Checks if this node is the last node in its level
+							// This can be easily detected because the next node
+							// in the level
+							// order traversal will be the first node in the
+							// next level
+							// which means it will have an offset less than this
+							// node
+							if (lastOffset <= dataOffset)
+								lastOffset = treeSize;
+							toBeSearched.push(lastOffset);
+						}
+					}
+					dataOffset = lastOffset;
+				}
+			} else {
+				int firstOffset, lastOffset;
+				// Search for data items (records)
+				lastOffset = searchNumber;
+				firstOffset = toBeSearched.pop();
+
+				data.seek(firstOffset + treeStartOffset);
+				LineReader lineReader = new LineReader(data);
+				while (firstOffset < lastOffset) {
+					firstOffset += lineReader.readLine(line);
+					stockObject.fromText(line);
+					if (stockObject.isIntersected(query_shape)) {
+						resultSize++;
+						if (output != null)
+							output.collect(stockObject);
+					}
+				}
+			}
+		}
+		return resultSize;
+	}
 	/**
 	 * Performs a range query over this tree using the given query range.
 	 * 
@@ -1306,11 +1409,23 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 	 *            are not reported
 	 * @return - Total number of records found
 	 */
-	public int search(Shape query, ResultCollector<Writable> output, String field) {
+	public int searchColumnar(Shape query, ResultCollector<Writable> output, String field) {
 		int resultCount = 0;
 
 		try {
-			resultCount = search(query, output, 0, 0, field);
+				resultCount = searchColumnar(query, output, 0, 0, field);
+
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		return resultCount;
+	}
+	
+	public int search(Shape query, ResultCollector<T> output, String field) {
+		int resultCount = 0;
+
+		try {
+				resultCount = search(query, output, 0, 0);
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -1347,7 +1462,7 @@ public class RTree<T extends Shape> implements Writable, Iterable<T> {
 			queryRange.x2 = qx + query_radius / 2;
 			queryRange.y2 = qy + query_radius / 2;
 			// Retrieve all results in range
-			search(queryRange, new ResultCollector<Writable>() {
+			searchColumnar(queryRange, new ResultCollector<Writable>() {
 				@Override
 				public void collect(Writable shape) {
 					distances.add(((T)shape).distanceTo(qt, qx, qy));

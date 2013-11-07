@@ -72,13 +72,12 @@ public class RangeQuery {
 
 	/** Name of the config line that stores the query shape */
 	public static final String QUERY_SHAPE = "com.ricemap.spateDB.operations.RangeQuery.QueryShape";
-	
+
 	/** Name of the config line that stores the query field */
 	public static final String QUERY_FIELD = "com.ricemap.spateDB.operations.RangeQuery.QueryField";
 
 	/** Reference to the last range query job submitted */
 	public static RunningJob lastRunningJob;
-	
 
 	/**
 	 * A filter function that selects partitions overlapping with a query range.
@@ -147,7 +146,7 @@ public class RangeQuery {
 			}
 		}
 	}
-	
+
 	/**
 	 * The reduce function used for distinct count
 	 * 
@@ -155,17 +154,20 @@ public class RangeQuery {
 	 * 
 	 * @param <T>
 	 */
-	public static class DistinctQueryReduce extends MapReduceBase implements Reducer<Writable, NullWritable, Writable, NullWritable>{
+	public static class DistinctQueryReduce extends MapReduceBase implements
+			Reducer<Writable, NullWritable, Writable, NullWritable> {
 		@Override
-		public void reduce(Writable key, Iterator<NullWritable> value, OutputCollector<Writable, NullWritable> output, Reporter reporter){
-			try{
+		public void reduce(Writable key, Iterator<NullWritable> value,
+				OutputCollector<Writable, NullWritable> output,
+				Reporter reporter) {
+			try {
 				output.collect(key, NullWritable.get());
-			} catch(IOException e){
+			} catch (IOException e) {
 				e.printStackTrace();
 			}
 		}
 	}
-	
+
 	/**
 	 * The reduce function used for distribution
 	 * 
@@ -173,22 +175,23 @@ public class RangeQuery {
 	 * 
 	 * @param <T>
 	 */
-	public static class DistributionQueryReduce extends MapReduceBase implements Reducer<Writable, IntWritable, Writable, IntWritable>{
+	public static class DistributionQueryReduce extends MapReduceBase implements
+			Reducer<Writable, IntWritable, Writable, IntWritable> {
 		@Override
-		public void reduce(Writable key, Iterator<IntWritable> value, OutputCollector<Writable, IntWritable> output, Reporter reporter){
-			try{
+		public void reduce(Writable key, Iterator<IntWritable> value,
+				OutputCollector<Writable, IntWritable> output, Reporter reporter) {
+			try {
 				int count = 0;
-				while (value.hasNext()){
-					count+= value.next().get();
+				while (value.hasNext()) {
+					count += value.next().get();
 				}
 				output.collect(key, new IntWritable(count));
-			} catch(IOException e){
+			} catch (IOException e) {
 				e.printStackTrace();
 			}
 		}
 	}
-	
-	
+
 	/**
 	 * The map function used for distinct count
 	 * 
@@ -208,9 +211,9 @@ public class RangeQuery {
 			super.configure(job);
 			try {
 				queryField = job.get(QUERY_FIELD);
-				
+
 				String queryShapeClassName = job.get(QUERY_SHAPE_CLASS);
-				
+
 				Class<? extends Shape> queryShapeClass = Class.forName(
 						queryShapeClassName).asSubclass(Shape.class);
 				queryShape = queryShapeClass.newInstance();
@@ -235,7 +238,7 @@ public class RangeQuery {
 				Reporter reporter) throws IOException {
 			if (value instanceof Shape) {
 				Shape shape = (Shape) value;
-				
+
 				try {
 					Class<?> c = shape.getClass();
 					Field f;
@@ -244,7 +247,8 @@ public class RangeQuery {
 					if (shape.isIntersected(queryShape)) {
 						boolean report_result = false;
 						if (cellMbr.isValid()) {
-							// Check for duplicate avoidance using reference point
+							// Check for duplicate avoidance using reference
+							// point
 							// technique
 							double reference_t = Math.max(queryMbr.t1,
 									shape.getMBR().t1);
@@ -258,50 +262,88 @@ public class RangeQuery {
 							// A heap block, report right away
 							report_result = true;
 						}
-	
-						if (report_result){
+
+						if (report_result) {
 							Writable result = null;
-							if (f.getType().equals(Integer.class)){
+							if (f.getType().equals(Integer.TYPE)) {
 								result = new IntWritable((int) f.get(shape));
-							}
-							else if (f.getType().equals(Integer.class)){
-								result = new IntWritable((int) f.get(shape));
-							}
-							else if (f.getType().equals(Integer.class)){
-								result = new IntWritable((int) f.get(shape));
+							} else if (f.getType().equals(Double.TYPE)) {
+								result = new DoubleWritable((int) f.get(shape));
+							} else if (f.getType().equals(Long.TYPE)) {
+								result = new LongWritable((int) f.get(shape));
 							}
 							output.collect(result, dummy);
-							
+
 						}
-					} 
-				}catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException e1) {
+					}
+				} catch (NoSuchFieldException | SecurityException
+						| IllegalArgumentException | IllegalAccessException e1) {
 					// TODO Auto-generated catch block
 					e1.printStackTrace();
 				}
 			} else if (value instanceof RTree) {
 				RTree<Shape> shapes = (RTree<Shape>) value;
-				shapes.search(queryMbr, new ResultCollector<Writable>() {
-					@Override
-					public void collect(Writable shape) {
-						try {
+				if (shapes.columnar) {
+					shapes.searchColumnar(queryMbr,
+							new ResultCollector<Writable>() {
+								@Override
+								public void collect(Writable shape) {
+									try {
 
-								output.collect(shape, dummy);
-							
-						} catch (IOException e) {
-							e.printStackTrace();
-						}  catch (SecurityException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
-						} catch (IllegalArgumentException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
+										output.collect(shape, dummy);
+
+									} catch (IOException e) {
+										e.printStackTrace();
+									} catch (SecurityException e) {
+										// TODO Auto-generated catch block
+										e.printStackTrace();
+									} catch (IllegalArgumentException e) {
+										// TODO Auto-generated catch block
+										e.printStackTrace();
+									}
+								}
+							}, queryField);
+				} else {
+					shapes.search(queryMbr, new ResultCollector<Shape>() {
+						@Override
+						public void collect(Shape shape) {
+							try {
+								Class<?> c = shape.getClass();
+								Field f;
+								f = c.getDeclaredField(queryField);
+								f.setAccessible(true);
+								Writable result = null;
+								if (f.getType().equals(Integer.TYPE)) {
+									result = new IntWritable((int) f.get(shape));
+								} else if (f.getType().equals(Double.TYPE)) {
+									result = new DoubleWritable((int) f.get(shape));
+								} else if (f.getType().equals(Long.TYPE)) {
+									result = new LongWritable((int) f.get(shape));
+								}
+								output.collect(result, dummy);
+
+							} catch (IOException e) {
+								e.printStackTrace();
+							} catch (SecurityException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (IllegalArgumentException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (NoSuchFieldException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (IllegalAccessException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							}
 						}
-					}
-				}, queryField);
+					}, queryField);
+				}
 			}
 		}
 	}
-	
+
 	/**
 	 * The map function used for range query
 	 * 
@@ -345,86 +387,122 @@ public class RangeQuery {
 				final OutputCollector<Writable, IntWritable> output,
 				Reporter reporter) throws IOException {
 			if (value instanceof Shape) {
-				try{
-				Shape shape = (Shape) value;
-				Class<?> c = shape.getClass();
-				Field f;
-				f = c.getDeclaredField(queryField);
-				f.setAccessible(true);
-				
-				if (shape.isIntersected(queryShape)) {
-					boolean report_result = false;
-					if (cellMbr.isValid()) {
-						// Check for duplicate avoidance using reference point
-						// technique
-						double reference_t = Math.max(queryMbr.t1,
-								shape.getMBR().t1);
-						double reference_x = Math.max(queryMbr.x1,
-								shape.getMBR().x1);
-						double reference_y = Math.max(queryMbr.y1,
-								shape.getMBR().y1);
-						report_result = cellMbr.contains(reference_t,
-								reference_x, reference_y);
-					} else {
-						// A heap block, report right away
-						report_result = true;
-					}
+				try {
+					Shape shape = (Shape) value;
+					Class<?> c = shape.getClass();
+					Field f;
+					f = c.getDeclaredField(queryField);
+					f.setAccessible(true);
 
-					if (report_result){
-						Writable result = null;
-						if (f.getType().equals(Integer.class)){
-							try {
-								result = new IntWritable((int) f.get(shape));
-							} catch (IllegalArgumentException
-									| IllegalAccessException e) {
-								// TODO Auto-generated catch block
-								e.printStackTrace();
-							}
+					if (shape.isIntersected(queryShape)) {
+						boolean report_result = false;
+						if (cellMbr.isValid()) {
+							// Check for duplicate avoidance using reference
+							// point
+							// technique
+							double reference_t = Math.max(queryMbr.t1,
+									shape.getMBR().t1);
+							double reference_x = Math.max(queryMbr.x1,
+									shape.getMBR().x1);
+							double reference_y = Math.max(queryMbr.y1,
+									shape.getMBR().y1);
+							report_result = cellMbr.contains(reference_t,
+									reference_x, reference_y);
+						} else {
+							// A heap block, report right away
+							report_result = true;
 						}
-						else if (f.getType().equals(Integer.class)){
-							try {
-								result = new IntWritable((int) f.get(shape));
-							} catch (IllegalArgumentException
-									| IllegalAccessException e) {
-								// TODO Auto-generated catch block
-								e.printStackTrace();
+
+						if (report_result) {
+							Writable result = null;
+							if (f.getType().equals(Integer.TYPE)) {
+								try {
+									result = new IntWritable((int) f.get(shape));
+								} catch (IllegalArgumentException
+										| IllegalAccessException e) {
+									// TODO Auto-generated catch block
+									e.printStackTrace();
+								}
+							} else if (f.getType().equals(Long.TYPE)) {
+								try {
+									result = new LongWritable((int) f.get(shape));
+								} catch (IllegalArgumentException
+										| IllegalAccessException e) {
+									// TODO Auto-generated catch block
+									e.printStackTrace();
+								}
+							} else if (f.getType().equals(Double.TYPE)) {
+								try {
+									result = new DoubleWritable((int) f.get(shape));
+								} catch (IllegalArgumentException
+										| IllegalAccessException e) {
+									// TODO Auto-generated catch block
+									e.printStackTrace();
+								}
 							}
+							output.collect(result, one);
+
 						}
-						else if (f.getType().equals(Integer.class)){
-							try {
-								result = new IntWritable((int) f.get(shape));
-							} catch (IllegalArgumentException
-									| IllegalAccessException e) {
-								// TODO Auto-generated catch block
-								e.printStackTrace();
-							}
-						}
-						output.collect(result, one);
-						
 					}
+				} catch (IllegalArgumentException | NoSuchFieldException
+						| SecurityException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
 				}
-				}
-				 catch (IllegalArgumentException | NoSuchFieldException | SecurityException
-							e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
 			} else if (value instanceof RTree) {
 				RTree<Shape> shapes = (RTree<Shape>) value;
-				shapes.search(queryMbr, new ResultCollector<Writable>() {
-					@Override
-					public void collect(Writable shape) {
-						try{
+				if (shapes.columnar) {
+					shapes.searchColumnar(queryMbr, new ResultCollector<Writable>() {
+						@Override
+						public void collect(Writable shape) {
+							try {
 								output.collect(shape, one);
-						} catch (IOException e) {
-							e.printStackTrace();
+							} catch (IOException e) {
+								e.printStackTrace();
+							}
 						}
-					}
-				}, queryField);
+					}, queryField);
+				}
+				else {
+					shapes.search(queryMbr, new ResultCollector<Shape>() {
+						@Override
+						public void collect(Shape shape) {
+							try {
+								Class<?> c = shape.getClass();
+								Field f;
+								f = c.getDeclaredField(queryField);
+								f.setAccessible(true);
+								Writable result = null;
+								if (f.getType().equals(Integer.class)) {
+									result = new IntWritable((int) f.get(shape));
+								} else if (f.getType().equals(Integer.class)) {
+									result = new IntWritable((int) f.get(shape));
+								} else if (f.getType().equals(Integer.class)) {
+									result = new IntWritable((int) f.get(shape));
+								}
+								output.collect(result, one);
+
+							} catch (IOException e) {
+								e.printStackTrace();
+							} catch (SecurityException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (IllegalArgumentException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (NoSuchFieldException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (IllegalAccessException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							}
+						}
+					}, queryField);
+				}
 			}
 		}
 	}
-
 
 	/**
 	 * Performs a range query using MapReduce
@@ -439,7 +517,8 @@ public class RangeQuery {
 	 */
 	public static long rangeQueryMapReduce(FileSystem fs, Path inputFile,
 			Path userOutputPath, Shape queryShape, Shape shape,
-			boolean overwrite, boolean background, QueryInput query) throws IOException {
+			boolean overwrite, boolean background, QueryInput query)
+			throws IOException {
 		JobConf job = new JobConf(FileMBR.class);
 
 		FileSystem outFs = inputFile.getFileSystem(job);
@@ -482,33 +561,32 @@ public class RangeQuery {
 			job.setInputFormat(ShapeInputFormat.class);
 		}
 
-		GlobalIndex<Partition> gIndex = SpatialSite.getGlobalIndex(fs, inputFile);
-		//if (gIndex != null && gIndex.isReplicated()){
-			//job.setMapperClass(RangeQueryMap.class);
-		
+		GlobalIndex<Partition> gIndex = SpatialSite.getGlobalIndex(fs,
+				inputFile);
+		// if (gIndex != null && gIndex.isReplicated()){
+		// job.setMapperClass(RangeQueryMap.class);
+
 		Class<?> OutputKey = NullWritable.class;
-		try{
+		try {
 			Class<?> c = shape.getClass();
 			Field f = c.getDeclaredField(query.field);
 			f.setAccessible(true);
-			if (f.getType().equals(Integer.TYPE)){
+			if (f.getType().equals(Integer.TYPE)) {
 				OutputKey = IntWritable.class;
-			}
-			else if (f.getType().equals(Double.TYPE)){
+			} else if (f.getType().equals(Double.TYPE)) {
 				OutputKey = DoubleWritable.class;
-			}
-			else if (f.getType().equals(Long.TYPE)){
+			} else if (f.getType().equals(Long.TYPE)) {
 				OutputKey = LongWritable.class;
 			}
-		} catch (SecurityException e){
+		} catch (SecurityException e) {
 			e.printStackTrace();
 		} catch (NoSuchFieldException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-		
+
 		job.setMapOutputKeyClass(OutputKey);
-		switch (query.type){
+		switch (query.type) {
 		case Distinct:
 			job.setMapperClass(DistinctQueryMap.class);
 			job.setReducerClass(DistinctQueryReduce.class);
@@ -522,9 +600,9 @@ public class RangeQuery {
 		default:
 			break;
 		}
-		//}
-		//else
-		//	job.setMapperClass(RangeQueryMapNoDupAvoidance.class);
+		// }
+		// else
+		// job.setMapperClass(RangeQueryMapNoDupAvoidance.class);
 
 		// Set query range for the map function
 		job.set(QUERY_SHAPE_CLASS, queryShape.getClass().getName());
@@ -594,8 +672,8 @@ public class RangeQuery {
 					// Check for duplicate avoidance
 					Prism intersection_mbr = queryRange.getMBR()
 							.getIntersection(shape.getMBR());
-					report_result = cell.contains(intersection_mbr.t1, intersection_mbr.x1,
-							intersection_mbr.y1);
+					report_result = cell.contains(intersection_mbr.t1,
+							intersection_mbr.x1, intersection_mbr.y1);
 				} else {
 					report_result = true;
 				}
@@ -641,7 +719,6 @@ public class RangeQuery {
 		int concurrency = cla.getConcurrency();
 		final Shape stockShape = cla.getShape(true);
 		final boolean overwrite = cla.isOverwrite();
-		
 
 		final long[] results = new long[queryRanges.length];
 		final Vector<Thread> threads = new Vector<Thread>();
@@ -661,7 +738,7 @@ public class RangeQuery {
 				public void run() {
 					try {
 						int thread_i = threads.indexOf(this);
-						
+
 						long result_count = rangeQueryMapReduce(fs, inputFile,
 								outputPath, queryRanges[thread_i], stockShape,
 								overwrite, false, query);
