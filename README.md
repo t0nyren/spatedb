@@ -15,10 +15,11 @@ Checkout SpateDB master branch from GitHub:
 
     git clone git://github.com/t0nyren/spatedb.git
   
-Package SpateDB with Maven:
+Build SpateDB with Maven:
 
     cd spatedb
     mvn pakcage
+
     
 ## Contact
 
