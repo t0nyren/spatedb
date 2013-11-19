@@ -694,7 +694,7 @@ public class RangeQuery {
 		System.out.println("Parameters: (* marks required parameters)");
 		System.out.println("<input file> - (*) Path to input file");
 		System.out.println("<output file> - Path to output file");
-		System.out.println("rect:<x,y,w,h> - (*) Query Prism");
+		System.out.println("prism:<t1,x1,y1,t2,x2,y2> - (*) Query Prism");
 		System.out.println("-overwrite - Overwrite output file without notice");
 	}
 

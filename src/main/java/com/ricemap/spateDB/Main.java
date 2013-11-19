@@ -17,6 +17,7 @@ import org.apache.hadoop.util.ProgramDriver;
 import com.ricemap.spateDB.operations.FileMBR;
 import com.ricemap.spateDB.operations.Plot;
 import com.ricemap.spateDB.operations.RangeQuery;
+import com.ricemap.spateDB.operations.RecordCount;
 import com.ricemap.spateDB.operations.Repartition;
 import com.ricemap.spateDB.operations.Sampler;
 import com.ricemap.spateDB.util.RandomSpatialGenerator;
@@ -36,6 +37,8 @@ public class Main {
       
       pgd.addClass("rangequery", RangeQuery.class,
           "Finds all objects in the query range given by a Prism");
+      pgd.addClass("count", RecordCount.class,
+              "Count number of records in the query range given by a Prism");
       pgd.addClass("index", Repartition.class,
           "Builds an index on an input file");
       pgd.addClass("mbr", FileMBR.class,
